@@ -14,8 +14,8 @@ from entropix.tokenizer import Tokenizer
 from entropix.torch_kvcache import KVCache
 from entropix.torch_model import xfmr
 from entropix.torch_weights import XfmrWeights, LayerWeights, load_weights
-from entropix.torch_sampler import sample
-from entropix.prompts import prompt, bp1
+from entropix.torch_sampler import sample, SamplerConfig
+from entropix.prompts import create_prompts_from_csv, prompt
 
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -80,13 +80,26 @@ def precompute_freqs_cis(dim: int, end: int, theta: float = 500000.0, use_scaled
 
 
 def build_attn_mask(seqlen: int, start_pos: int) -> torch.Tensor:
-  mask = None
+  mask = torch.zeros((seqlen, seqlen), dtype=torch.float32).to(device)
   if seqlen > 1:
       mask = torch.full((seqlen, seqlen), float("-inf"))
       mask = torch.triu(mask, diagonal=1)
       mask = torch.hstack([torch.zeros((seqlen, start_pos)), mask]).to(torch.float32).to(device)
   return mask
 
+def rgb_to_ansi(r: int, g: int, b: int) -> str:
+    """Convert RGB color to ANSI escape sequence."""
+    return f"\033[38;2;{r};{g};{b}m"
+
+def apply_color_and_format(text: str, color: Tuple[int, int, int], formatting: str) -> str:
+    """Apply color and formatting to text."""
+    color_code = rgb_to_ansi(*color)
+    return f"{color_code}{formatting}{text}\033[0m"
+
+def print_colored(text: str, color: Tuple[int, int, int], formatting: str, end: str = ''):
+    """Print text with color and formatting."""
+    colored_text = apply_color_and_format(text, color, formatting)
+    print(colored_text, end=end, flush=True)
 
 
 def main():
@@ -97,7 +110,7 @@ def main():
     tokenizer = Tokenizer('entropix/tokenizer.model')
     raw_tokens1 = tokenizer.encode(prompt,  bos=False, eos=False, allowed_special='all')
     #this is not used in this script, but can be used to generate base_raw_tokens1
-    base_raw_tokens1 = tokenizer.encode(bp1, bos=True, eos=False, allowed_special='all')
+    # base_raw_tokens1 = tokenizer.encode(bp1, bos=True, eos=False, allowed_special='all')
 
 
     def generate(xfmr_weights, model_params, tokens):
@@ -114,17 +127,34 @@ def main():
       print(tokenizer.decode([next_token.item()]), end='', flush=True)
       cur_pos = seqlen
       stop = torch.tensor([128001, 128008, 128009], device=device, dtype=torch.int32)
+      sampler_cfg = SamplerConfig()
       while cur_pos < 8192:
         cur_pos += 1
         logits, kvcache, scores, stats = xfmr(xfmr_weights, model_params, next_token, cur_pos, freqs_cis[cur_pos:cur_pos+1], kvcache)
-        next_token = sample(gen_tokens, logits, scores)
+        next_token, color = sample(gen_tokens, logits, scores, cfg = sampler_cfg)
         gen_tokens = torch.cat((gen_tokens, next_token), dim=1)
-        print(tokenizer.decode(next_token.tolist()[0]), end='', flush=True)
+        out_token = tokenizer.decode(next_token.tolist()[0])
+        print_colored(out_token, color[0], color[1], end='')
         if torch.isin(next_token, stop).any():
           break
 
-    print(prompt)
-    generate(xfmr_weights, model_params, raw_tokens1)
+    csv_path = Path('entropix/data/acp.csv')
+    prompts = create_prompts_from_csv(csv_path)
+    PROMPT_TEST = False
+
+    if PROMPT_TEST:
+      for test_prompt in prompts:
+        print(test_prompt)
+        tokens = tokenizer.encode(test_prompt, bos=False, eos=False, allowed_special='all')
+        generate(xfmr_weights, model_params, tokens)
+        print()
+    else:
+        raw_tokens1 = tokenizer.encode(prompt,  bos=False, eos=False, allowed_special='all')
+        #this is not used in this script, but can be used to generate base_raw_tokens1
+        # base_raw_tokens1 = tokenizer.encode(bp1, bos=True, eos=False, allowed_special='all')
+        print(prompt)
+        generate(xfmr_weights, model_params, raw_tokens1)
+        print()
 
 if __name__ == '__main__':
   tyro.cli(main)

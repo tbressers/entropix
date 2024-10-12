@@ -47,14 +47,15 @@ def attention(x: torch.Tensor, layer_weights: LayerWeights, model_params, cur_po
     xq = torch.permute(xq, (0, 2, 1, 3))  # (bs, n_heads, seqlen, head_dim)
     keys = torch.permute(keys, (0, 2, 3, 1))  # (bs, n_heads, head_dim, cache_len + seqlen)
     values = torch.permute(values, (0, 2, 1, 3))  # (bs, n_heads, cache_len + seqlen, head_dim)
-    scores = torch.matmul(xq, keys)
+    keys = keys.to(xq.dtype) # when curr_pos != 0, cached keys are in bfloat16 while post rope xq is in float32 (follow jax implementation)
+    scores = torch.matmul(xq, keys) 
     pre_scores = scores / math.sqrt(model_params.head_dim)
     scores = pre_scores.to(torch.float32)  # Always do attention softmax at float32
     if cur_pos == 0:
         scores = scores + attn_mask
     mask = torch.where(scores != 0.0, scores, DEFAULT_MASK_VALUE)
     padded_logits = torch.where((mask >= DEFAULT_MASK_VALUE * 0.5), scores, DEFAULT_MASK_VALUE)
-    scores = F.softmax(padded_logits, dim=-1).to(torch.float32)
+    scores = F.softmax(padded_logits, dim=-1).to(x.dtype)
     output = torch.matmul(scores, values)
     output = output.transpose(1, 2).reshape(xq.shape[0], xq.shape[2], -1)
     out = F.linear(output, layer_weights.wo)
